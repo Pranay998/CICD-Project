@@ -1,0 +1,31 @@
+pipeline {
+    agent any
+    tools {
+        maven "Maven-3.9.9"
+    }
+    stages {
+        stage('Pulling the code') {
+            steps {
+                git branch: 'main', url: 'https://github.com/Penny998/CICD-project.git'
+            }
+        }
+        stage('Packaging') {
+            steps {
+                sh 'mvn package'
+            }
+        }
+        stage('Deploy Artifacts in Nexus'){
+             steps{
+                 sh 'mvn deploy'
+             }
+        }
+        stage('Deploy App in Container'){
+            steps{
+                echo "Deploying App in Container"
+                deploy adapters: [tomcat9(credentialsId: '9fc5d902-a5e5-41e6-99f4-aeaf46e2ec67', path: '', url: 'http://3.109.123.22:8080/')], contextPath: null, war: '**/*.war'
+              
+    }
+   }
+ }
+}
+

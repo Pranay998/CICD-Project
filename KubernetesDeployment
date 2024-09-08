@@ -1,0 +1,118 @@
+pipeline {
+    agent any
+
+    environment {
+        GIT_REPO_URL = 'https://github.com/Penny998/CICD-project.git'
+        DOCKER_IMAGE_NAME = 'bookstore'
+        DOCKER_CONTAINER_NAME = 'bookstoreapp'
+        DOCKER_REPO = 'penny998/cicdbookstore'  // Your Docker repository
+        TAG_NAME = 'v1'  // The tag you are using
+        K8S_DEPLOYMENT_NAME = 'bookstore-deployment'
+        K8S_NAMESPACE = 'default'  // Change this if you want to use a different namespace
+    }
+
+    tools {
+        maven "Maven-3.9.9"
+    }
+
+    stages {
+        stage('Clone Repository') {
+            steps {
+                git branch: 'main', url: "${GIT_REPO_URL}"
+            }
+        }
+
+        stage('Packaging') {
+            steps {
+                sh 'mvn clean package -DskipTests=true'
+            }
+        }
+
+        stage('Build Docker Image') {
+            steps {
+                sh "docker build -t ${DOCKER_IMAGE_NAME}:latest -f Dockerfile ."
+            }
+        }
+
+        stage('Push Docker Image') {
+            steps {
+                script {
+                    // Tag and push the Docker image
+                    sh "docker tag ${DOCKER_IMAGE_NAME}:latest ${DOCKER_REPO}:${TAG_NAME}"
+                    sh "docker push ${DOCKER_REPO}:${TAG_NAME}"
+                }
+            }
+        }
+
+        stage('Deploy to Kubernetes') {
+            steps {
+                script {
+                    // Create or update the Kubernetes deployment
+                    sh """
+                        kubectl apply -f - <<EOF
+                        apiVersion: apps/v1
+                        kind: Deployment
+                        metadata:
+                          name: ${K8S_DEPLOYMENT_NAME}
+                          namespace: ${K8S_NAMESPACE}
+                        spec:
+                          replicas: 3  # Number of desired pods
+                          selector:
+                            matchLabels:
+                              app: ${DOCKER_CONTAINER_NAME}
+                          template:
+                            metadata:
+                              labels:
+                                app: ${DOCKER_CONTAINER_NAME}
+                            spec:
+                              containers:
+                              - name: ${DOCKER_CONTAINER_NAME}
+                                image: ${DOCKER_REPO}:${TAG_NAME}
+                                ports:
+                                - containerPort: 8081
+                                readinessProbe:
+                                  httpGet:
+                                    path: /
+                                    port: 8081
+                                  initialDelaySeconds: 5
+                                  periodSeconds: 10
+                                livenessProbe:
+                                  httpGet:
+                                    path: /
+                                    port: 8081
+                                  initialDelaySeconds: 15
+                                  periodSeconds: 20
+                        EOF
+                    """
+
+                    // Expose the deployment as a service
+                    sh """
+                        kubectl expose deployment ${K8S_DEPLOYMENT_NAME} --type=LoadBalancer --name=${K8S_DEPLOYMENT_NAME}-service --port=8081 --target-port=8081 --namespace=${K8S_NAMESPACE}
+                    """
+
+                    // Set up horizontal pod auto-scaler
+                    sh """
+                        kubectl autoscale deployment ${K8S_DEPLOYMENT_NAME} --cpu-percent=50 --min=1 --max=5 --namespace=${K8S_NAMESPACE}
+                    """
+                }
+            }
+        }
+    }
+
+    post {
+        always {
+            try {
+                sh 'docker images || true'  // Use || true to prevent failure if the command fails
+            } catch (Exception e) {
+                echo "Failed to list Docker images: ${e.getMessage()}"
+            }
+        }
+        failure {
+            try {
+                sh "kubectl delete deployment ${K8S_DEPLOYMENT_NAME} --namespace=${K8S_NAMESPACE} || true"  // Use || true to prevent failure if the command fails
+            } catch (Exception e) {
+                echo "Failed to delete Kubernetes deployment: ${e.getMessage()}"
+            }
+        }
+    }
+}
